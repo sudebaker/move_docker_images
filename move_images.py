@@ -187,7 +187,7 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
-def get_all_local_images(exclude_registries: Optional[list[str]] = None, 
+def get_all_local_images(exclude_registries: Optional[list[str]] = None,
                          auto_exclude_registries: bool = True) -> list[dict]:
     """Obtiene todas las imágenes locales del sistema.
 
@@ -897,8 +897,8 @@ def main():
             logging.error(
                 "--registry-url es requerido para push/pull (o especificarlo en registry_config)")
             sys.exit(1)
-        if args.action == 'push' and not args.docker_compose:
-            logging.error("--docker-compose es requerido para push")
+        if not args.docker_compose:
+            logging.error("--docker-compose es requerido para push/pull")
             sys.exit(1)
     else:  # disk mode (save/load)
         if not args.output_dir:
