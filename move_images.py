@@ -900,9 +900,12 @@ def main():
         if args.action == 'push' and not args.docker_compose:
             logging.error("--docker-compose es requerido para push")
             sys.exit(1)
-    else:  # disk mode
+    else:  # disk mode (save/load)
         if not args.output_dir:
             logging.error("--output-dir es requerido para save/load")
+            sys.exit(1)
+        if not args.docker_compose:
+            logging.error("--docker-compose es requerido para save/load")
             sys.exit(1)
 
     # Metadata path
