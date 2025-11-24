@@ -187,6 +187,28 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
+def get_all_local_images() -> list[dict]:
+    """Obtiene todas las imágenes locales del sistema."""
+    try:
+        result = subprocess.run(
+            ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
+            capture_output=True, text=True, check=True)
+        
+        images_info = []
+        for line in result.stdout.strip().split('\n'):
+            if line and not line.startswith('<none>'):
+                images_info.append({
+                    'name': line,
+                    'service': None,
+                    'built': False,  # No podemos saber si fue built sin docker-compose
+                    'compose_image': line
+                })
+        return images_info
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error al listar imágenes: {e}")
+        return []
+
+
 def image_exists(image: str) -> bool:
     """Verifica si la imagen existe localmente."""
     try:
@@ -770,12 +792,21 @@ def main():
 
     # Ejecutar acción
     if args.action == 'save':
-        if not args.docker_compose:
-            print("❌ Error: --docker-compose es requerido para la acción 'save'")
-            sys.exit(1)
         output_dir = pathlib.Path(args.output_dir)
-        docker_compose_path = pathlib.Path(args.docker_compose)
-        images, _ = parse_docker_compose(docker_compose_path)
+        
+        if args.docker_compose:
+            # Usar imágenes del docker-compose
+            docker_compose_path = pathlib.Path(args.docker_compose)
+            images, _ = parse_docker_compose(docker_compose_path)
+        else:
+            # Usar todas las imágenes locales
+            print("ℹ️  No se especificó docker-compose, guardando todas las imágenes locales")
+            check_docker_available()
+            images = get_all_local_images()
+            if not images:
+                print("❌ No se encontraron imágenes locales")
+                sys.exit(1)
+        
         save_images(images, output_dir, args.skip_unchanged,
                     metadata_path, args.only_built)
 
