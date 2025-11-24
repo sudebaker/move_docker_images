@@ -189,7 +189,7 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
 
 def get_all_local_images(exclude_registries: Optional[list[str]] = None) -> list[dict]:
     """Obtiene todas las imágenes locales del sistema.
-    
+
     Args:
         exclude_registries: Lista de registries a excluir (ej: ['git.ucosistemas.gc'])
     """
@@ -197,21 +197,21 @@ def get_all_local_images(exclude_registries: Optional[list[str]] = None) -> list
         result = subprocess.run(
             ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
             capture_output=True, text=True, check=True)
-        
+
         images_info = []
         exclude_registries = exclude_registries or []
-        
+
         for line in result.stdout.strip().split('\n'):
             if not line or line.startswith('<none>'):
                 continue
-            
+
             # Excluir imágenes de registries específicos
             should_exclude = False
             for registry in exclude_registries:
                 if line.startswith(f"{registry}/"):
                     should_exclude = True
                     break
-            
+
             if not should_exclude:
                 images_info.append({
                     'name': line,
@@ -223,6 +223,8 @@ def get_all_local_images(exclude_registries: Optional[list[str]] = None) -> list
     except subprocess.CalledProcessError as e:
         logging.error(f"Error al listar imágenes: {e}")
         return []
+
+
 def image_exists(image: str) -> bool:
     """Verifica si la imagen existe localmente."""
     try:
@@ -881,7 +883,7 @@ def main():
             print(
                 "ℹ️  No se especificó docker-compose, guardando todas las imágenes locales")
             check_docker_available()
-            
+
             # Detectar registries a excluir del config, args o --exclude-registry
             exclude_registries = []
             if loaded_config.get('registry_url'):
@@ -890,13 +892,14 @@ def main():
                 exclude_registries.append(args.registry_url)
             if args.exclude_registries:
                 exclude_registries.extend(args.exclude_registries)
-            
+
             # Eliminar duplicados
             exclude_registries = list(set(exclude_registries))
-            
+
             if exclude_registries:
-                print(f"🚫 Excluyendo imágenes de: {', '.join(exclude_registries)}")
-            
+                print(
+                    f"🚫 Excluyendo imágenes de: {', '.join(exclude_registries)}")
+
             images = get_all_local_images(exclude_registries)
             if not images:
                 print("❌ No se encontraron imágenes locales")
