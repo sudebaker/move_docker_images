@@ -1,0 +1,8 @@
+{
+  "registry_url": "registry.example.com",
+  "username": "your_username",
+  "password": "your_password",
+  "prefix": "projects",
+  "insecure": false,
+  "auto_logout": false
+}

@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Docker artifacts
+docker_images/
+*.tar
+
+# Metadata
+image_metadata.json
+
+# Configuration with credentials
+registry_config.json
+
+# Local docker-compose
+docker-compose.yml
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
