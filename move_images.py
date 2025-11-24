@@ -187,30 +187,64 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
-def get_all_local_images(exclude_registries: Optional[list[str]] = None) -> list[dict]:
+def get_all_local_images(exclude_registries: Optional[list[str]] = None, 
+                         auto_exclude_registries: bool = True) -> list[dict]:
     """Obtiene todas las imágenes locales del sistema.
 
     Args:
         exclude_registries: Lista de registries a excluir (ej: ['git.ucosistemas.gc'])
+        auto_exclude_registries: Si True, detecta y excluye automáticamente imágenes duplicadas
+                                 que tienen una versión sin registry
     """
     try:
         result = subprocess.run(
             ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
             capture_output=True, text=True, check=True)
 
+        all_lines = [line for line in result.stdout.strip().split('\n')
+                     if line and not line.startswith('<none>')]
+
+        # Si auto_exclude_registries está activo, detectar duplicados
+        base_images_set = set()  # Conjunto de imágenes base (sin registry)
+        if auto_exclude_registries:
+            # Primero, identificar imágenes base (sin registry)
+            for line in all_lines:
+                # Detectar si tiene un registry (contiene un dominio al inicio)
+                # Ejemplo: git.ucosistemas.gc/sistemas/ucographrag/backend:latest
+                # vs: ucographrag/backend:latest
+                parts = line.split('/', 1)
+                if len(parts) > 1 and ('.' in parts[0] or ':' in parts[0].split(':')[0]):
+                    # Tiene registry, skip por ahora
+                    pass
+                else:
+                    # No tiene registry, es una imagen base
+                    base_images_set.add(line)
+
         images_info = []
         exclude_registries = exclude_registries or []
 
-        for line in result.stdout.strip().split('\n'):
+        for line in all_lines:
             if not line or line.startswith('<none>'):
                 continue
 
-            # Excluir imágenes de registries específicos
+            # Excluir imágenes de registries específicos manualmente especificados
             should_exclude = False
             for registry in exclude_registries:
                 if line.startswith(f"{registry}/"):
                     should_exclude = True
                     break
+
+            # Auto-excluir si es una imagen con registry y existe la versión base
+            if auto_exclude_registries and not should_exclude:
+                parts = line.split('/', 1)
+                if len(parts) > 1 and ('.' in parts[0] or ':' in parts[0].split(':')[0]):
+                    # Tiene registry, verificar si existe versión base
+                    rest = parts[1]
+                    if '/' in rest:
+                        potential_base = '/'.join(rest.split('/')[1:])
+                        # Si existe la versión base (sin registry), excluir esta
+                        if potential_base in base_images_set:
+                            should_exclude = True
 
             if not should_exclude:
                 images_info.append({
@@ -550,6 +584,15 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) ->
                 f"⚠️  No se pudo verificar la imagen en registry: {registry_tag}")
             logging.warning(
                 "La imagen puede no ser accesible desde otras máquinas")
+
+        # Limpiar el tag local del registry después del push
+        # Esto evita que queden tags duplicados en el sistema local
+        print("🧹 Limpiando tag local del registry...")
+        try:
+            subprocess.run(['docker', 'rmi', registry_tag],
+                           capture_output=True, check=False)
+        except Exception:
+            pass  # No es crítico si falla
 
         return True
     except subprocess.CalledProcessError as e:
