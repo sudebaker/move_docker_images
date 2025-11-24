@@ -1,8 +1,9 @@
 {
   "registry_url": "registry.example.com",
   "username": "your_username",
-  "password": "your_password",
+  "password": "your_password_or_token",
   "prefix": "projects",
   "insecure": false,
-  "auto_logout": false
+  "auto_logout": false,
+  "_comment": "For Gitea: registry_url=gitea.domain.com, username=your_user, password=personal_access_token, prefix=username/project"
 }
