@@ -193,7 +193,7 @@ def get_all_local_images() -> list[dict]:
         result = subprocess.run(
             ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
             capture_output=True, text=True, check=True)
-        
+
         images_info = []
         for line in result.stdout.strip().split('\n'):
             if line and not line.startswith('<none>'):
@@ -481,6 +481,19 @@ def get_image_digest(registry_tag: str) -> Optional[str]:
         return None
 
 
+def verify_image_in_registry(registry_tag: str) -> bool:
+    """Verifica si la imagen existe en el registry haciendo un pull dry-run."""
+    try:
+        # Intenta inspeccionar el manifest sin descargar la imagen
+        result = subprocess.run(
+            ['docker', 'manifest', 'inspect', registry_tag],
+            capture_output=True, text=True, timeout=30
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) -> bool:
     """Tag y push de imagen al registry."""
     try:
@@ -502,6 +515,15 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) ->
         except:
             spinner.stop()
             raise
+        
+        # Verificar que la imagen está realmente en el registry
+        print(f"🔍 Verificando imagen en registry...")
+        if verify_image_in_registry(registry_tag):
+            print(f"✅ Imagen verificada en registry: {registry_tag}")
+        else:
+            logging.warning(f"⚠️  No se pudo verificar la imagen en registry: {registry_tag}")
+            logging.warning("La imagen puede no ser accesible desde otras máquinas")
+        
         return True
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.lower() if e.stderr else ""
@@ -558,7 +580,20 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
 
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error al pull: {e.stderr if e.stderr else e}")
+        stderr = e.stderr.lower() if e.stderr else ""
+        print(f"❌ Error al pull: {registry_tag}")
+        if 'manifest unknown' in stderr or 'not found' in stderr:
+            print("📋 Diagnóstico del error 'manifest unknown':")
+            print(f"   1. Verifica que la imagen existe: docker manifest inspect {registry_tag}")
+            print(f"   2. Comprueba el tag exacto en el registry")
+            print(f"   3. Verifica permisos de lectura en el registry")
+            print(f"   4. Confirma que la imagen se subió correctamente (revisa logs del push)")
+        elif 'unauthorized' in stderr or '401' in stderr:
+            print("🔐 Error de autenticación. Ejecuta: docker login <registry>")
+        elif 'denied' in stderr or '403' in stderr:
+            print("🚫 Permisos denegados para acceder a esta imagen")
+        else:
+            print(f"   Detalle: {e.stderr if e.stderr else str(e)}")
         return False
     except subprocess.TimeoutExpired:
         logging.error(f"Timeout al pull de {registry_tag}")
@@ -793,20 +828,21 @@ def main():
     # Ejecutar acción
     if args.action == 'save':
         output_dir = pathlib.Path(args.output_dir)
-        
+
         if args.docker_compose:
             # Usar imágenes del docker-compose
             docker_compose_path = pathlib.Path(args.docker_compose)
             images, _ = parse_docker_compose(docker_compose_path)
         else:
             # Usar todas las imágenes locales
-            print("ℹ️  No se especificó docker-compose, guardando todas las imágenes locales")
+            print(
+                "ℹ️  No se especificó docker-compose, guardando todas las imágenes locales")
             check_docker_available()
             images = get_all_local_images()
             if not images:
                 print("❌ No se encontraron imágenes locales")
                 sys.exit(1)
-        
+
         save_images(images, output_dir, args.skip_unchanged,
                     metadata_path, args.only_built)
 
