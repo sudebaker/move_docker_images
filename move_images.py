@@ -12,7 +12,7 @@ import threading
 import time
 import warnings
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 
 import yaml
 
@@ -20,6 +20,12 @@ import yaml
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+# Constantes
+DEFAULT_TIMEOUT = 600
+DISK_CHECK_MB = 1000
+DOCKER_SAVE_TIMEOUT = 300
+SPINNER_DELAY = 0.1
 
 
 class Spinner:
@@ -37,7 +43,7 @@ class Spinner:
             frame = self.frames[i % len(self.frames)]
             print(f'\r{frame} {self.message}', end='', flush=True)
             i += 1
-            time.sleep(0.1)
+            time.sleep(SPINNER_DELAY)
 
     def start(self):
         self.running = True
@@ -66,7 +72,7 @@ def check_docker_available():
         return False
 
 
-def parse_docker_compose(docker_compose_path: pathlib.Path) -> tuple[list[dict], dict]:
+def parse_docker_compose(docker_compose_path: pathlib.Path) -> Tuple[List[Dict], Dict]:
     """Obtiene información de imágenes y si provienen de build.
     Retorna (images_info, compose_data)."""
     try:
@@ -127,9 +133,9 @@ def parse_docker_compose(docker_compose_path: pathlib.Path) -> tuple[list[dict],
     return images_info, compose_data
 
 
-def generate_registry_compose(compose_data: dict, images_info: list[dict],
+def generate_registry_compose(compose_data: Dict, images_info: List[Dict],
                               registry_url: str, prefix: str,
-                              output_path: pathlib.Path):
+                              output_path: pathlib.Path) -> None:
     """Genera un nuevo docker-compose.yml con imágenes del registry."""
     import copy
     from datetime import datetime, timezone
@@ -171,7 +177,7 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
             # Escribir comentario de generación
             timestamp = datetime.now(timezone.utc).strftime(
                 '%Y-%m-%d %H:%M:%S UTC')
-            f.write(f"# Generado automáticamente por move_images.py\n")
+            f.write("# Generado automáticamente por move_images.py\n")
             f.write(f"# Fecha: {timestamp}\n")
             f.write(f"# Registry: {registry_url}\n")
             f.write(
@@ -187,8 +193,8 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
-def get_all_local_images(exclude_registries: Optional[list[str]] = None,
-                         auto_exclude_registries: bool = True) -> list[dict]:
+def get_all_local_images(exclude_registries: Optional[List[str]] = None,
+                         auto_exclude_registries: bool = True) -> List[Dict]:
     """Obtiene todas las imágenes locales del sistema.
 
     Args:
@@ -269,7 +275,7 @@ def image_exists(image: str) -> bool:
         return False
 
 
-def check_disk_space(output_dir: pathlib.Path, required_mb: int = 1000) -> bool:
+def check_disk_space(output_dir: pathlib.Path, required_mb: int = DISK_CHECK_MB) -> bool:
     """Verifica si hay suficiente espacio en disco (en MB)."""
     try:
         stat = shutil.disk_usage(output_dir)
@@ -284,7 +290,7 @@ def check_disk_space(output_dir: pathlib.Path, required_mb: int = 1000) -> bool:
         return False
 
 
-def load_metadata(metadata_path: pathlib.Path) -> dict:
+def load_metadata(metadata_path: pathlib.Path) -> Dict:
     """Lee metadata previa de imágenes si existe."""
     if not metadata_path.exists():
         return {}
@@ -296,7 +302,7 @@ def load_metadata(metadata_path: pathlib.Path) -> dict:
         return {}
 
 
-def save_metadata(metadata_path: pathlib.Path, metadata: dict):
+def save_metadata(metadata_path: pathlib.Path, metadata: Dict) -> None:
     """Guarda metadata actualizada."""
     try:
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -347,8 +353,8 @@ def docker_login(registry_url: str, username: str, password: str) -> bool:
         cmd = ['docker', 'login', registry_url,
                '-u', username, '--password-stdin']
 
-        result = subprocess.run(cmd, input=password.encode(),
-                                capture_output=True, check=True)
+        subprocess.run(cmd, input=password.encode(),
+                       capture_output=True, check=True)
         print(f"✔️  Login exitoso en {registry_url}")
         return True
     except subprocess.CalledProcessError as e:
@@ -553,7 +559,7 @@ def verify_image_in_registry(registry_tag: str) -> bool:
         return False
 
 
-def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) -> bool:
+def push_image_to_registry(image: str, registry_tag: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
     """Tag y push de imagen al registry."""
     try:
         # Tag imagen
@@ -564,13 +570,13 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) ->
         spinner = Spinner(f"Pushing {image}")
         spinner.start()
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ['docker', 'push', registry_tag],
                 capture_output=True, text=True,
                 check=True, timeout=timeout
             )
             spinner.stop()
-        except:
+        except Exception:
             spinner.stop()
             raise
 
@@ -612,7 +618,7 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) ->
 
 
 def pull_image_from_registry(registry_tag: str, original_name: str,
-                             timeout: int = 600) -> bool:
+                             timeout: int = DEFAULT_TIMEOUT) -> bool:
     """Pull imagen desde registry y re-tag a nombre original."""
     try:
         # Pull imagen con spinner
@@ -650,7 +656,8 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
         elif 'denied' in stderr or '403' in stderr:
             logging.error(f"Permisos denegados: {registry_tag}")
         else:
-            logging.error(f"Error al pull {registry_tag}: {e.stderr if e.stderr else str(e)}")
+            logging.error(
+                f"Error al pull {registry_tag}: {e.stderr if e.stderr else str(e)}")
         return False
     except subprocess.TimeoutExpired:
         logging.error(f"Timeout al pull de {registry_tag}")
@@ -661,19 +668,19 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
 # ORQUESTADORES PUSH/PULL
 # ============================================================================
 
-def push_images(images: list[dict], registry_url: str, prefix: str,
+def push_images(images: List[Dict], registry_url: str, prefix: str,
                 skip_unchanged: bool, metadata_path: pathlib.Path,
-                only_built: bool, timeout: int = 600):
+                only_built: bool, timeout: int = DEFAULT_TIMEOUT) -> Dict:
     """Push imágenes al registry con lógica de skip y metadata."""
     metadata = load_metadata(metadata_path)
     metadata_changed = False
-    
+
     stats = {'pushed': 0, 'skipped': 0, 'failed': 0, 'not_found': 0}
 
     for idx, info in enumerate(images, 1):
         image = info['name']
         progress = f"[{idx}/{len(images)}]"
-        
+
         if only_built and not info.get('built'):
             print(f"{progress} ⏭️  {image} (solo construidas)")
             stats['skipped'] += 1
@@ -725,11 +732,11 @@ def push_images(images: list[dict], registry_url: str, prefix: str,
 
     if metadata_changed:
         save_metadata(metadata_path, metadata)
-    
+
     return stats
 
 
-def pull_images(metadata_path: pathlib.Path, timeout: int = 600):
+def pull_images(metadata_path: pathlib.Path, timeout: int = DEFAULT_TIMEOUT) -> Dict:
     """Pull imágenes desde registry usando metadata."""
     metadata = load_metadata(metadata_path)
 
@@ -739,7 +746,7 @@ def pull_images(metadata_path: pathlib.Path, timeout: int = 600):
 
     stats = {'pulled': 0, 'skipped': 0, 'failed': 0}
     items = list(metadata.items())
-    
+
     print(f"\n📦 Descargando {len(items)} imágenes desde registry...\n")
     for idx, (image, info) in enumerate(items, 1):
         progress = f"[{idx}/{len(items)}]"
@@ -755,13 +762,13 @@ def pull_images(metadata_path: pathlib.Path, timeout: int = 600):
         else:
             print(f"{progress} ❌ {image} (error)")
             stats['failed'] += 1
-    
+
     return stats
 
 
-def save_images(images: list[dict], output_dir: pathlib.Path,
+def save_images(images: List[Dict], output_dir: pathlib.Path,
                 skip_unchanged: bool, metadata_path: pathlib.Path,
-                only_built: bool):
+                only_built: bool) -> Dict:
     """Guarda las imágenes en archivos .tar en el directorio especificado."""
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n📂 Directorio de salida: {output_dir}\n")
@@ -773,7 +780,7 @@ def save_images(images: list[dict], output_dir: pathlib.Path,
     for idx, info in enumerate(images, 1):
         image = info['name']
         progress = f"[{idx}/{len(images)}]"
-        
+
         if only_built and not info.get('built'):
             print(f"{progress} ⏭️  {image} (solo construidas)")
             stats['skipped'] += 1
@@ -801,7 +808,7 @@ def save_images(images: list[dict], output_dir: pathlib.Path,
         spinner.start()
         try:
             subprocess.run(
-                ['docker', 'save', '-o', str(file_path), image], check=True, timeout=300)
+                ['docker', 'save', '-o', str(file_path), image], check=True, timeout=DOCKER_SAVE_TIMEOUT)
             spinner.stop()
             print(f"{progress} ✅ {image}")
             metadata[image] = {
@@ -825,18 +832,18 @@ def save_images(images: list[dict], output_dir: pathlib.Path,
 
     if metadata_changed:
         save_metadata(metadata_path, metadata)
-    
+
     return stats
 
 
-def load_images(input_dir: pathlib.Path):
+def load_images(input_dir: pathlib.Path) -> Dict:
     """Carga todas las imágenes .tar del directorio especificado."""
     if not input_dir.exists():
         raise RuntimeError(f"El directorio de entrada no existe: {input_dir}")
 
     files = list(input_dir.glob('*.tar'))
     stats = {'loaded': 0, 'failed': 0}
-    
+
     print(f"\n📥 Cargando {len(files)} imágenes...\n")
     for idx, file_path in enumerate(files, 1):
         progress = f"[{idx}/{len(files)}]"
@@ -844,7 +851,7 @@ def load_images(input_dir: pathlib.Path):
         spinner.start()
         try:
             subprocess.run(
-                ['docker', 'load', '-i', str(file_path)], check=True, timeout=300)
+                ['docker', 'load', '-i', str(file_path)], check=True, timeout=DOCKER_SAVE_TIMEOUT)
             spinner.stop()
             print(f"{progress} ✅ {file_path.name}")
             stats['loaded'] += 1
@@ -857,7 +864,7 @@ def load_images(input_dir: pathlib.Path):
             spinner.stop()
             print(f"{progress} ❌ {file_path.name} (timeout)")
             stats['failed'] += 1
-    
+
     return stats
 
 
@@ -881,8 +888,8 @@ def main():
                         help="Excluir imágenes de este registry al usar save sin docker-compose (puede repetirse)")
     parser.add_argument('--metadata-file', dest='metadata_file',
                         help="Ruta al archivo JSON con metadata. Por defecto: output-dir/image_metadata.json")
-    parser.add_argument('--timeout', type=int, default=600,
-                        help="Timeout en segundos para operaciones (default: 600)")
+    parser.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT,
+                        help=f"Timeout en segundos para operaciones (default: {DEFAULT_TIMEOUT})")
 
     # Opciones de registry
     parser.add_argument('--registry-url',
@@ -983,9 +990,9 @@ def main():
 
         stats = save_images(images, output_dir, args.skip_unchanged,
                             metadata_path, args.only_built)
-        
+
         # Resumen
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("📊 Resumen:")
         print(f"   ✅ Guardadas:  {stats['saved']}")
         print(f"   ⏭️  Saltadas:   {stats['skipped']}")
@@ -993,18 +1000,18 @@ def main():
         if stats['not_found'] > 0:
             print(f"   🚫 No encontradas: {stats['not_found']}")
         print(f"   📄 Metadata: {metadata_path}")
-        print("="*50)
+        print("=" * 50)
 
     elif args.action == 'load':
         output_dir = pathlib.Path(args.output_dir)
         stats = load_images(output_dir)
-        
+
         # Resumen
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("📊 Resumen:")
         print(f"   ✅ Cargadas:   {stats['loaded']}")
         print(f"   ❌ Fallidas:   {stats['failed']}")
-        print("="*50)
+        print("=" * 50)
 
     elif args.action == 'push':
         if not args.docker_compose:
@@ -1016,13 +1023,13 @@ def main():
         registry_prefix = args.registry_prefix or loaded_config.get(
             'prefix', '')
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("🐳 Docker Registry Push Tool")
-        print("="*60)
+        print("=" * 60)
         print(f"📍 Registry: {registry_url}")
         print(f"📦 Prefix: {registry_prefix or '(ninguno)'}")
         print(f"📄 Compose: {args.docker_compose}")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
         # Verificar registry
         if not check_registry_available(registry_url):
@@ -1041,11 +1048,11 @@ def main():
         images, compose_data = parse_docker_compose(docker_compose_path)
         print(f"📋 Procesando {len(images)} imágenes...\n")
         stats = push_images(images, registry_url, registry_prefix,
-                    args.skip_unchanged, metadata_path, args.only_built,
-                    args.timeout)
-        
+                            args.skip_unchanged, metadata_path, args.only_built,
+                            args.timeout)
+
         # Resumen
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("📊 Resumen:")
         print(f"   ✅ Subidas:    {stats['pushed']}")
         print(f"   ⏭️  Saltadas:   {stats['skipped']}")
@@ -1053,7 +1060,7 @@ def main():
         if stats['not_found'] > 0:
             print(f"   🚫 No encontradas: {stats['not_found']}")
         print(f"   📄 Metadata: {metadata_path}")
-        print("="*50)
+        print("=" * 50)
 
         # Generar nuevo docker-compose si se solicitó
         if args.generate_compose:
@@ -1092,14 +1099,14 @@ def main():
 
         # Pull imágenes
         stats = pull_images(metadata_path, args.timeout)
-        
+
         # Resumen
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("📊 Resumen:")
         print(f"   ✅ Descargadas: {stats['pulled']}")
         print(f"   ⏭️  Saltadas:    {stats['skipped']}")
         print(f"   ❌ Fallidas:    {stats['failed']}")
-        print("="*50)
+        print("=" * 50)
 
         # Logout si se solicitó
         auto_logout = args.auto_logout or config_data.get('auto_logout', False)
