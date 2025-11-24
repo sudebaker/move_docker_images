@@ -695,8 +695,7 @@ def main():
         '--action', choices=['save', 'load', 'push', 'pull'], required=True,
         help="Acción: save/load (disco) o push/pull (registry)")
     parser.add_argument('--docker-compose', dest='docker_compose',
-                        default='./docker-compose.yml',
-                        help="Ruta al archivo docker-compose.yml (default: ./docker-compose.yml)")
+                        help="Ruta al archivo docker-compose.yml (requerido para save/push)")
     parser.add_argument('--output-dir',
                         help="Directorio para guardar/cargar imágenes (solo modo disco)")
 
@@ -771,6 +770,9 @@ def main():
 
     # Ejecutar acción
     if args.action == 'save':
+        if not args.docker_compose:
+            print("❌ Error: --docker-compose es requerido para la acción 'save'")
+            sys.exit(1)
         output_dir = pathlib.Path(args.output_dir)
         docker_compose_path = pathlib.Path(args.docker_compose)
         images, _ = parse_docker_compose(docker_compose_path)
@@ -782,6 +784,9 @@ def main():
         load_images(output_dir)
 
     elif args.action == 'push':
+        if not args.docker_compose:
+            print("❌ Error: --docker-compose es requerido para la acción 'push'")
+            sys.exit(1)
         # Cargar config si existe para obtener registry_url y prefix
         registry_url = args.registry_url or loaded_config.get(
             'registry_url', '')
