@@ -428,7 +428,7 @@ def check_registry_available(registry_url: str) -> bool:
 def generate_registry_tag(image: str, registry_url: str, prefix: str = "",
                           service_name: str = "", compose_image: str = "") -> str:
     """Genera tag para el registry usando nombre del servicio o compose_image.
-    
+
     Para Gitea: registry_url debe ser 'gitea.example.com' y prefix debe ser 'usuario/proyecto'
     Ejemplo: gitea.example.com/miusuario/miproyecto/imagen:tag
     """
@@ -599,19 +599,26 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
                 f"   1. Verifica que la imagen existe: docker manifest inspect {registry_tag}")
             print("   2. Comprueba el tag exacto en el registry")
             print("   3. Verifica permisos de lectura en el registry")
-            print("   4. Confirma que la imagen se subió correctamente (revisa logs del push)")
+            print(
+                "   4. Confirma que la imagen se subió correctamente (revisa logs del push)")
             print("\n   Para Gitea específicamente:")
-            print("   - El formato debe ser: gitea.domain.com/usuario/proyecto/imagen:tag")
-            print("   - Asegúrate de que el paquete Container Registry está habilitado en Gitea")
-            print("   - Verifica en la web: https://gitea.domain.com/usuario/-/packages/container/")
-            print("   - Los nombres de imagen en Gitea deben ser lowercase y usar guiones (no underscores)")
+            print(
+                "   - El formato debe ser: gitea.domain.com/usuario/proyecto/imagen:tag")
+            print(
+                "   - Asegúrate de que el paquete Container Registry está habilitado en Gitea")
+            print(
+                "   - Verifica en la web: https://gitea.domain.com/usuario/-/packages/container/")
+            print(
+                "   - Los nombres de imagen en Gitea deben ser lowercase y usar guiones (no underscores)")
         elif 'unauthorized' in stderr or '401' in stderr:
             print("🔐 Error de autenticación.")
             print(f"   Ejecuta: docker login {registry_tag.split('/')[0]}")
-            print("   Para Gitea: usa tu usuario y un Personal Access Token con permisos 'write:package'")
+            print(
+                "   Para Gitea: usa tu usuario y un Personal Access Token con permisos 'write:package'")
         elif 'denied' in stderr or '403' in stderr:
             print("🚫 Permisos denegados para acceder a esta imagen")
-            print("   Para Gitea: verifica que el token tiene permisos 'read:package' o 'write:package'")
+            print(
+                "   Para Gitea: verifica que el token tiene permisos 'read:package' o 'write:package'")
         else:
             print(f"   Detalle: {e.stderr if e.stderr else str(e)}")
         return False
