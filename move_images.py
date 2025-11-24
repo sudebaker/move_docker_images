@@ -515,15 +515,17 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = 600) ->
         except:
             spinner.stop()
             raise
-        
+
         # Verificar que la imagen está realmente en el registry
         print(f"🔍 Verificando imagen en registry...")
         if verify_image_in_registry(registry_tag):
             print(f"✅ Imagen verificada en registry: {registry_tag}")
         else:
-            logging.warning(f"⚠️  No se pudo verificar la imagen en registry: {registry_tag}")
-            logging.warning("La imagen puede no ser accesible desde otras máquinas")
-        
+            logging.warning(
+                f"⚠️  No se pudo verificar la imagen en registry: {registry_tag}")
+            logging.warning(
+                "La imagen puede no ser accesible desde otras máquinas")
+
         return True
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.lower() if e.stderr else ""
@@ -584,10 +586,12 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
         print(f"❌ Error al pull: {registry_tag}")
         if 'manifest unknown' in stderr or 'not found' in stderr:
             print("📋 Diagnóstico del error 'manifest unknown':")
-            print(f"   1. Verifica que la imagen existe: docker manifest inspect {registry_tag}")
+            print(
+                f"   1. Verifica que la imagen existe: docker manifest inspect {registry_tag}")
             print(f"   2. Comprueba el tag exacto en el registry")
             print(f"   3. Verifica permisos de lectura en el registry")
-            print(f"   4. Confirma que la imagen se subió correctamente (revisa logs del push)")
+            print(
+                f"   4. Confirma que la imagen se subió correctamente (revisa logs del push)")
         elif 'unauthorized' in stderr or '401' in stderr:
             print("🔐 Error de autenticación. Ejecuta: docker login <registry>")
         elif 'denied' in stderr or '403' in stderr:
