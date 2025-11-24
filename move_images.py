@@ -695,7 +695,8 @@ def main():
         '--action', choices=['save', 'load', 'push', 'pull'], required=True,
         help="Acción: save/load (disco) o push/pull (registry)")
     parser.add_argument('--docker-compose', dest='docker_compose',
-                        help="Ruta al archivo docker-compose.yml (requerido para save/push)")
+                        default='./docker-compose.yml',
+                        help="Ruta al archivo docker-compose.yml (default: ./docker-compose.yml)")
     parser.add_argument('--output-dir',
                         help="Directorio para guardar/cargar imágenes (solo modo disco)")
 
