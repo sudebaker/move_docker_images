@@ -187,16 +187,32 @@ def generate_registry_compose(compose_data: dict, images_info: list[dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
-def get_all_local_images() -> list[dict]:
-    """Obtiene todas las imágenes locales del sistema."""
+def get_all_local_images(exclude_registries: Optional[list[str]] = None) -> list[dict]:
+    """Obtiene todas las imágenes locales del sistema.
+    
+    Args:
+        exclude_registries: Lista de registries a excluir (ej: ['git.ucosistemas.gc'])
+    """
     try:
         result = subprocess.run(
             ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
             capture_output=True, text=True, check=True)
-
+        
         images_info = []
+        exclude_registries = exclude_registries or []
+        
         for line in result.stdout.strip().split('\n'):
-            if line and not line.startswith('<none>'):
+            if not line or line.startswith('<none>'):
+                continue
+            
+            # Excluir imágenes de registries específicos
+            should_exclude = False
+            for registry in exclude_registries:
+                if line.startswith(f"{registry}/"):
+                    should_exclude = True
+                    break
+            
+            if not should_exclude:
                 images_info.append({
                     'name': line,
                     'service': None,
@@ -207,8 +223,6 @@ def get_all_local_images() -> list[dict]:
     except subprocess.CalledProcessError as e:
         logging.error(f"Error al listar imágenes: {e}")
         return []
-
-
 def image_exists(image: str) -> bool:
     """Verifica si la imagen existe localmente."""
     try:
@@ -788,6 +802,8 @@ def main():
                         help="No vuelve a guardar/push imágenes sin cambios")
     parser.add_argument('--only-built', action='store_true',
                         help="Solo imágenes construidas localmente (servicios con build)")
+    parser.add_argument('--exclude-registry', action='append', dest='exclude_registries',
+                        help="Excluir imágenes de este registry al usar save sin docker-compose (puede repetirse)")
     parser.add_argument('--metadata-file', dest='metadata_file',
                         help="Ruta al archivo JSON con metadata. Por defecto: output-dir/image_metadata.json")
     parser.add_argument('--timeout', type=int, default=600,
@@ -865,7 +881,23 @@ def main():
             print(
                 "ℹ️  No se especificó docker-compose, guardando todas las imágenes locales")
             check_docker_available()
-            images = get_all_local_images()
+            
+            # Detectar registries a excluir del config, args o --exclude-registry
+            exclude_registries = []
+            if loaded_config.get('registry_url'):
+                exclude_registries.append(loaded_config.get('registry_url'))
+            if args.registry_url:
+                exclude_registries.append(args.registry_url)
+            if args.exclude_registries:
+                exclude_registries.extend(args.exclude_registries)
+            
+            # Eliminar duplicados
+            exclude_registries = list(set(exclude_registries))
+            
+            if exclude_registries:
+                print(f"🚫 Excluyendo imágenes de: {', '.join(exclude_registries)}")
+            
+            images = get_all_local_images(exclude_registries)
             if not images:
                 print("❌ No se encontraron imágenes locales")
                 sys.exit(1)
