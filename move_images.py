@@ -208,7 +208,7 @@ def get_all_local_images(exclude_registries: Optional[List[str]] = None,
             capture_output=True, text=True, check=True)
 
         all_lines = [line for line in result.stdout.strip().split('\n')
-                     if line and not line.startswith('<none>')]
+                     if line and '<none>' not in line]
 
         # Si auto_exclude_registries está activo, detectar duplicados
         base_images_set = set()  # Conjunto de imágenes base (sin registry)
@@ -288,6 +288,35 @@ def check_disk_space(output_dir: pathlib.Path, required_mb: int = DISK_CHECK_MB)
     except Exception as e:
         logging.error(f"Error al verificar espacio en disco: {e}")
         return False
+
+
+def generate_safe_filename(image: str, service_name: Optional[str] = None) -> str:
+    """Genera un nombre de archivo seguro y legible para una imagen.
+    
+    Args:
+        image: Nombre de la imagen (puede ser name:tag o sha256:hash)
+        service_name: Nombre del servicio si está disponible
+    
+    Returns:
+        Nombre de archivo seguro para .tar
+    """
+    # Si tenemos el nombre del servicio, usarlo como base
+    if service_name:
+        base = service_name.replace('/', '_').replace(':', '_')
+        # Agregar tag si la imagen lo tiene
+        if ':' in image and not image.startswith('sha256:'):
+            tag = image.split(':')[-1]
+            return f"{base}_{tag}.tar"
+        return f"{base}_latest.tar"
+    
+    # Si es una imagen con SHA256, usar una versión corta más legible
+    if image.startswith('sha256:'):
+        # Usar solo los primeros 12 caracteres del hash
+        short_hash = image.replace('sha256:', '')[:12]
+        return f"image_{short_hash}.tar"
+    
+    # Caso normal: nombre:tag
+    return image.replace('/', '_').replace(':', '_') + ".tar"
 
 
 def load_metadata(metadata_path: pathlib.Path) -> Dict:
@@ -794,7 +823,7 @@ def save_images(images: List[Dict], output_dir: pathlib.Path,
             stats['failed'] += 1
             break
 
-        filename = image.replace('/', '_').replace(':', '_') + ".tar"
+        filename = generate_safe_filename(image, info.get('service'))
         file_path = output_dir / filename
         image_id = get_image_id(image)
         if skip_unchanged and image_id:
