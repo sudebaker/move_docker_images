@@ -292,11 +292,11 @@ def check_disk_space(output_dir: pathlib.Path, required_mb: int = DISK_CHECK_MB)
 
 def generate_safe_filename(image: str, service_name: Optional[str] = None) -> str:
     """Genera un nombre de archivo seguro y legible para una imagen.
-    
+
     Args:
         image: Nombre de la imagen (puede ser name:tag o sha256:hash)
         service_name: Nombre del servicio si está disponible
-    
+
     Returns:
         Nombre de archivo seguro para .tar
     """
@@ -308,13 +308,13 @@ def generate_safe_filename(image: str, service_name: Optional[str] = None) -> st
             tag = image.split(':')[-1]
             return f"{base}_{tag}.tar"
         return f"{base}_latest.tar"
-    
+
     # Si es una imagen con SHA256, usar una versión corta más legible
     if image.startswith('sha256:'):
         # Usar solo los primeros 12 caracteres del hash
         short_hash = image.replace('sha256:', '')[:12]
         return f"image_{short_hash}.tar"
-    
+
     # Caso normal: nombre:tag
     return image.replace('/', '_').replace(':', '_') + ".tar"
 
