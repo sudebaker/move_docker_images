@@ -124,6 +124,12 @@ def parse_docker_compose(docker_compose_path: pathlib.Path) -> Tuple[List[Dict],
         service_cfg = services_cfg.get(service_name, {})
         compose_image = service_cfg.get('image', '')
 
+        # IMPORTANTE: Si compose_image existe y la imagen actual es SHA256,
+        # preferir compose_image (el nombre definido en docker-compose.yml)
+        # Esto asegura que docker save use el nombre correcto en lugar del hash
+        if compose_image and (repo == 'sha256' or image_name.startswith('sha256:')):
+            image_name = compose_image
+
         images_info.append({
             'name': image_name,
             'service': service_name,
@@ -833,13 +839,27 @@ def save_images(images: List[Dict], output_dir: pathlib.Path,
                 stats['skipped'] += 1
                 continue
 
-        spinner = Spinner(f"Guardando {image}")
+        # Si la imagen tiene un nombre deseado diferente al actual (compose_image),
+        # tagearla antes de guardar para que docker save preserve el nombre correcto
+        compose_image = info.get('compose_image', '')
+        if compose_image and compose_image != image and image.startswith('sha256:'):
+            try:
+                subprocess.run(['docker', 'tag', image, compose_image],
+                               check=True, capture_output=True)
+                # Usar el nombre correcto para el save
+                save_image = compose_image
+            except subprocess.CalledProcessError:
+                save_image = image
+        else:
+            save_image = image
+
+        spinner = Spinner(f"Guardando {save_image}")
         spinner.start()
         try:
             subprocess.run(
-                ['docker', 'save', '-o', str(file_path), image], check=True, timeout=DOCKER_SAVE_TIMEOUT)
+                ['docker', 'save', '-o', str(file_path), save_image], check=True, timeout=DOCKER_SAVE_TIMEOUT)
             spinner.stop()
-            print(f"{progress} ✅ {image}")
+            print(f"{progress} ✅ {save_image}")
             metadata[image] = {
                 'id': image_id,
                 'tar': str(file_path),
