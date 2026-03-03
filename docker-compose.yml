@@ -1,0 +1,448 @@
+# Generado automáticamente por move_images.py
+# Fecha: 2025-11-21 12:10:46 UTC
+# Registry: git.ucosistemas.gc
+# Servicios modificados: nginx, qdrant, memgraph, memgraph-lab, tika, unstructured, whisper, vllm, entity-extractor, redis, opensearch, backend, ai_worker, db_worker, code-interpreter, frontend-react, prometheus, grafana, alertmanager, dcgm-exporter, redis-exporter, node-exporter, opensearch-exporter, celery-exporter, memgraph-exporter
+
+services:
+  nginx:
+    image: git.ucosistemas.gc/sistemas/nginx:1.25-alpine
+    container_name: reverse_proxy
+    ports:
+    - 80:80
+    volumes:
+    - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+    - backend
+    - frontend-react
+    restart: unless-stopped
+    networks:
+      public_network: null
+      isolated_network: null
+  qdrant:
+    image: git.ucosistemas.gc/sistemas/qdrant/qdrant:latest
+    container_name: qdrant_db
+    ports:
+    - 6333:6333
+    volumes:
+    - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.10
+  memgraph:
+    image: git.ucosistemas.gc/sistemas/memgraph/memgraph-mage:latest
+    container_name: memgraph_db_mage
+    ports:
+    - 7687:7687
+    volumes:
+    - memgraph_data:/var/lib/memgraph
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.15
+  memgraph-lab:
+    image: git.ucosistemas.gc/sistemas/memgraph/lab:latest
+    container_name: memgraph_lab_ui
+    ports:
+    - 3000:3000
+    environment:
+      MEMGRAPH_HOST: memgraph
+    depends_on:
+    - memgraph
+    restart: unless-stopped
+    networks:
+      public_network:
+        aliases:
+        - memgraph-lab
+      isolated_network:
+        ipv4_address: 172.20.0.16
+  tika:
+    image: git.ucosistemas.gc/sistemas/apache/tika:latest-full
+    container_name: tika_server
+    restart: unless-stopped
+    environment:
+    - TIKA_ENCODING=UTF-8
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.11
+  unstructured:
+    image: git.ucosistemas.gc/sistemas/quay.io/unstructured-io/unstructured-api:latest
+    container_name: unstructured
+    restart: unless-stopped
+    expose:
+    - '8000'
+    devices:
+    - nvidia.com/gpu=all
+    environment:
+    - UNSTRUCTURED_LOG_LEVEL=DEBUG
+    - UNSTRUCTURED_PARTITION_STRATEGY=auto
+    - UNSTRUCTURED_SKIP_INFER_TABLE_STRUCTURE=false
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.12
+  whisper:
+    image: git.ucosistemas.gc/sistemas/onerahmet/openai-whisper-asr-webservice:latest-gpu
+    container_name: whisper_asr
+    restart: unless-stopped
+    environment:
+    - ASR_MODEL=small
+    - ASR_ENGINE=faster_whisper
+    - ASR_LANGUAGE=auto
+    - ASR_COMPUTE_TYPE=int8
+    - ASR_BEAM_SIZE=1
+    - ASR_DEVICE=cpu
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.32
+  vllm:
+    image: git.ucosistemas.gc/sistemas/vllm/vllm-openai:latest
+    container_name: vllm_server
+    volumes:
+    - .:/app
+    - ./entrypoint-vllm.sh:/app/entrypoint-vllm.sh
+    - ./get_vllm_args.py:/app/get_vllm_args.py
+    devices:
+    - nvidia.com/gpu=all
+    restart: unless-stopped
+    entrypoint: /app/entrypoint-vllm.sh
+    environment:
+    - SECRET_KEY=${SECRET_KEY}
+    - VLLM_GPU_MEMORY_UTILIZATION=0.8
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8000/health
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.13
+  entity-extractor:
+    pull_policy: always
+    image: git.ucosistemas.gc/sistemas/ucographrag/entity-extractor:latest
+    container_name: entity_extractor
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.14
+  redis:
+    image: git.ucosistemas.gc/sistemas/redis:7-alpine
+    container_name: redis_broker
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.17
+  opensearch:
+    image: git.ucosistemas.gc/sistemas/opensearchproject/opensearch:2.11.1
+    container_name: opensearch_db
+    environment:
+    - discovery.type=single-node
+    - bootstrap.memory_lock=true
+    - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    - DISABLE_SECURITY_PLUGIN=true
+    - DISABLE_INSTALL_DEMO_CONFIG=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+    - opensearch_data:/usr/share/opensearch/data
+    ports:
+    - 9200:9200
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.22
+  backend:
+    depends_on:
+      qdrant:
+        condition: service_started
+      memgraph:
+        condition: service_started
+      redis:
+        condition: service_started
+      tika:
+        condition: service_started
+      vllm:
+        condition: service_started
+      unstructured:
+        condition: service_started
+      whisper:
+        condition: service_started
+      opensearch:
+        condition: service_started
+    pull_policy: always
+    container_name: graphrag_backend
+    image: git.ucosistemas.gc/sistemas/ucographrag/backend:latest
+    volumes:
+    - .:/app
+    - ./to_ingest:/data
+    - ./models:/app/models
+    env_file:
+    - .env
+    environment:
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    command: uvicorn llm_server:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.18
+  ai_worker:
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_started
+      vllm:
+        condition: service_healthy
+      whisper:
+        condition: service_started
+    pull_policy: always
+    container_name: graphrag_ai_worker
+    image: git.ucosistemas.gc/sistemas/ucographrag/ai-worker:latest
+    command: bash -c "sleep 10 && celery -A worker.celery_app worker -Q ai_tasks --loglevel=INFO
+      -c 1"
+    environment:
+    - CELERY_FORCE_EXECV=1
+    - SECRET_KEY=${SECRET_KEY}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+    - .:/app
+    - ./to_ingest:/data
+    - ./models:/app/models
+    devices:
+    - nvidia.com/gpu=all
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.19
+  db_worker:
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_started
+      memgraph:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      whisper:
+        condition: service_started
+    pull_policy: always
+    container_name: graphrag_db_worker
+    image: git.ucosistemas.gc/sistemas/ucographrag/db-worker:latest
+    command: bash -c "sleep 10 && celery -A worker.celery_app worker -Q cpu_tasks
+      --loglevel=INFO -c 2"
+    volumes:
+    - .:/app
+    - ./to_ingest:/data
+    - ./models:/app/models
+    environment:
+    - SECRET_KEY=${SECRET_KEY}
+    - HF_HUB_OFFLINE=1
+    - TRANSFORMERS_OFFLINE=1
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.20
+  code-interpreter:
+    pull_policy: always
+    container_name: code_interpreter
+    image: git.ucosistemas.gc/sistemas/ucographrag/code-interpreter:latest
+    volumes:
+    - ./to_ingest:/app/data
+    ports:
+    - 8002:8002
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.21
+  frontend-react:
+    pull_policy: always
+    container_name: graphrag_frontend_react
+    image: git.ucosistemas.gc/sistemas/ucographrag/frontend-react:latest
+    restart: unless-stopped
+    networks:
+      isolated_network: null
+  prometheus:
+    image: git.ucosistemas.gc/sistemas/prom/prometheus:latest
+    container_name: prometheus
+    ports:
+    - 9090:9090
+    volumes:
+    - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
+    - prometheus_data:/prometheus
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=30d
+    - --storage.tsdb.retention.size=10GB
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+    - --web.enable-lifecycle
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.23
+  grafana:
+    image: git.ucosistemas.gc/sistemas/grafana/grafana:latest
+    container_name: grafana
+    ports:
+    - 3001:3000
+    volumes:
+    - grafana_data:/var/lib/grafana
+    - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+    - GF_SECURITY_ADMIN_USER=admin
+    - GF_SECURITY_ADMIN_PASSWORD=admin
+    - GF_USERS_ALLOW_SIGN_UP=false
+    - GF_SERVER_ROOT_URL=http://localhost:3001
+    - GF_INSTALL_PLUGINS=
+    depends_on:
+    - prometheus
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.24
+      public_network: null
+  alertmanager:
+    image: git.ucosistemas.gc/sistemas/prom/alertmanager:latest
+    container_name: alertmanager
+    ports:
+    - 9093:9093
+    volumes:
+    - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    - alertmanager_data:/alertmanager
+    command:
+    - --config.file=/etc/alertmanager/alertmanager.yml
+    - --storage.path=/alertmanager
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.25
+  dcgm-exporter:
+    image: git.ucosistemas.gc/sistemas/nvcr.io/nvidia/k8s/dcgm-exporter:3.1.8-3.1.5-ubuntu20.04
+    container_name: dcgm_exporter
+    ports:
+    - 9400:9400
+    devices:
+    - nvidia.com/gpu=all
+    environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.26
+  redis-exporter:
+    image: git.ucosistemas.gc/sistemas/oliver006/redis_exporter:latest
+    container_name: redis_exporter
+    ports:
+    - 9121:9121
+    environment:
+    - REDIS_ADDR=redis://redis:6379
+    depends_on:
+    - redis
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.27
+  node-exporter:
+    image: git.ucosistemas.gc/sistemas/prom/node-exporter:latest
+    container_name: node_exporter
+    ports:
+    - 9100:9100
+    command:
+    - --path.rootfs=/host
+    - --path.procfs=/host/proc
+    - --path.sysfs=/host/sys
+    - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.28
+  opensearch-exporter:
+    image: git.ucosistemas.gc/sistemas/prometheuscommunity/elasticsearch-exporter:latest
+    container_name: opensearch_exporter
+    ports:
+    - 9114:9114
+    command:
+    - --es.uri=http://opensearch:9200
+    - --es.all
+    - --es.indices
+    - --es.shards
+    depends_on:
+    - opensearch
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.29
+  celery-exporter:
+    pull_policy: always
+    container_name: celery_exporter
+    image: git.ucosistemas.gc/sistemas/ucographrag/celery-exporter:latest
+    ports:
+    - 9808:9808
+    environment:
+    - CELERY_BROKER_URL=redis://redis:6379/0
+    - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+    - redis
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.30
+  memgraph-exporter:
+    pull_policy: always
+    container_name: memgraph_exporter
+    image: git.ucosistemas.gc/sistemas/ucographrag/memgraph-exporter:latest
+    ports:
+    - 9809:9809
+    environment:
+    - MEMGRAPH_HOST=memgraph
+    - MEMGRAPH_PORT=7687
+    depends_on:
+    - memgraph
+    restart: unless-stopped
+    networks:
+      isolated_network:
+        ipv4_address: 172.20.0.31
+volumes:
+  qdrant_data: null
+  memgraph_data: {}
+  opensearch_data: null
+  prometheus_data: null
+  grafana_data: null
+  alertmanager_data: null
+networks:
+  public_network:
+    driver: bridge
+  isolated_network:
+    driver: bridge
+    ipam:
+      config:
+      - subnet: 172.20.0.0/24
+        gateway: 172.20.0.1

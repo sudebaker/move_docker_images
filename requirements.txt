@@ -1,0 +1,8 @@
+# Docker Image Migration Tool - Dependencies
+
+# Core dependencies
+pyyaml>=5.1
+
+# Development dependencies (optional)
+pytest>=6.0
+pytest-cov>=2.10

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -143,9 +144,6 @@ def generate_registry_compose(compose_data: Dict, images_info: List[Dict],
                               registry_url: str, prefix: str,
                               output_path: pathlib.Path) -> None:
     """Genera un nuevo docker-compose.yml con imágenes del registry."""
-    import copy
-    from datetime import datetime, timezone
-
     new_compose = copy.deepcopy(compose_data)
     services = new_compose.get('services', {})
 
@@ -199,6 +197,27 @@ def generate_registry_compose(compose_data: Dict, images_info: List[Dict],
         print(f"❌ Error al generar docker-compose: {e}")
 
 
+def image_has_registry(image_name: str) -> bool:
+    """Detecta si una imagen tiene un registry en su nombre.
+    
+    Ejemplos:
+    - 'git.ucosistemas.gc/sistemas/image:tag' -> True (tiene punto)
+    - 'localhost:5000/image:tag' -> True (contiene puerto)
+    - 'quay.io/image:tag' -> True (tiene punto)
+    - 'myregistry:5000/image:tag' -> True (tiene puerto)
+    - 'ubuntu:20.04' -> False (sin registry)
+    - 'myimage/subimage:tag' -> False (sin registry)
+    """
+    # Si contiene /, la parte antes del / es el registry
+    if '/' in image_name:
+        registry_part = image_name.split('/')[0]
+        # Tiene registry si el primer componente tiene . (dominio) o : (puerto)
+        return '.' in registry_part or ':' in registry_part
+    
+    # Sin /, cualquier : es un tag, no un registry/puerto
+    return False
+
+
 def get_all_local_images(exclude_registries: Optional[List[str]] = None,
                          auto_exclude_registries: bool = True) -> List[Dict]:
     """Obtiene todas las imágenes locales del sistema.
@@ -221,14 +240,7 @@ def get_all_local_images(exclude_registries: Optional[List[str]] = None,
         if auto_exclude_registries:
             # Primero, identificar imágenes base (sin registry)
             for line in all_lines:
-                # Detectar si tiene un registry (contiene un dominio al inicio)
-                # Ejemplo: git.ucosistemas.gc/sistemas/ucographrag/backend:latest
-                # vs: ucographrag/backend:latest
-                parts = line.split('/', 1)
-                if len(parts) > 1 and ('.' in parts[0] or ':' in parts[0].split(':')[0]):
-                    # Tiene registry, skip por ahora
-                    pass
-                else:
+                if not image_has_registry(line):
                     # No tiene registry, es una imagen base
                     base_images_set.add(line)
 
@@ -248,15 +260,18 @@ def get_all_local_images(exclude_registries: Optional[List[str]] = None,
 
             # Auto-excluir si es una imagen con registry y existe la versión base
             if auto_exclude_registries and not should_exclude:
-                parts = line.split('/', 1)
-                if len(parts) > 1 and ('.' in parts[0] or ':' in parts[0].split(':')[0]):
+                if image_has_registry(line):
                     # Tiene registry, verificar si existe versión base
-                    rest = parts[1]
-                    if '/' in rest:
-                        potential_base = '/'.join(rest.split('/')[1:])
-                        # Si existe la versión base (sin registry), excluir esta
-                        if potential_base in base_images_set:
-                            should_exclude = True
+                    # Extraer la parte sin el registry
+                    first_slash = line.find('/')
+                    if first_slash != -1:
+                        rest = line[first_slash + 1:]  # Parte después del registry/
+                        if '/' in rest:
+                            # Formato: registry/org/image:tag -> buscar org/image:tag
+                            potential_base = '/'.join(rest.split('/')[1:])
+                            # Si existe la versión base (sin registry), excluir esta
+                            if potential_base in base_images_set:
+                                should_exclude = True
 
             if not should_exclude:
                 images_info.append({
@@ -285,7 +300,7 @@ def check_disk_space(output_dir: pathlib.Path, required_mb: int = DISK_CHECK_MB)
     """Verifica si hay suficiente espacio en disco (en MB)."""
     try:
         stat = shutil.disk_usage(output_dir)
-        available_mb = stat.free / (1024 ** 3) * 1000  # Convertir a MB
+        available_mb = stat.free / (1024 ** 2)  # Convertir bytes a MB
         if available_mb < required_mb:
             logging.error(
                 f"Espacio insuficiente en {output_dir}: {available_mb:.2f} MB disponibles, se necesitan al menos {required_mb} MB.")
@@ -338,10 +353,12 @@ def load_metadata(metadata_path: pathlib.Path) -> Dict:
 
 
 def save_metadata(metadata_path: pathlib.Path, metadata: Dict) -> None:
-    """Guarda metadata actualizada."""
+    """Guarda metadata actualizada con permisos seguros (600)."""
     try:
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(json.dumps(metadata, indent=2))
+        # Establecer permisos seguros (solo lectura/escritura para el propietario)
+        metadata_path.chmod(0o600)
     except Exception as e:
         logging.error(f"No se pudo guardar metadata en {metadata_path}: {e}")
 
@@ -484,7 +501,7 @@ def ensure_registry_auth(registry_url: str, user: Optional[str] = None,
     # 6. Auth required but not provided
     logging.error(f"Registry {registry_url} requiere autenticación.")
     logging.error("Opciones:")
-    logging.error("  1. Ejecuta: docker login {registry_url}")
+    logging.error(f"  1. Ejecuta: docker login {registry_url}")
     logging.error("  2. Usa: --registry-user y --registry-password")
     logging.error("  3. Define: REGISTRY_USER y REGISTRY_PASSWORD")
     logging.error("  4. Usa: --registry-config <archivo.json>")
@@ -758,10 +775,12 @@ def push_images(images: List[Dict], registry_url: str, prefix: str,
             stats['pushed'] += 1
         else:
             print(f"{progress} ❌ {image} (error)")
-            metadata[image] = metadata.get(image, {})
-            metadata[image]['push_status'] = 'failed'
-            metadata[image]['failed_at'] = datetime.now(
-                timezone.utc).isoformat(timespec='seconds')
+            # Limpiar metadata parcial si falló: solo guardar el estado de fallo
+            metadata[image] = {
+                'push_status': 'failed',
+                'failed_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'id': image_id
+            }
             metadata_changed = True
             stats['failed'] += 1
 
@@ -773,8 +792,8 @@ def push_images(images: List[Dict], registry_url: str, prefix: str,
 
 def pull_images(metadata_path: pathlib.Path, timeout: int = DEFAULT_TIMEOUT) -> Dict:
     """Pull imágenes desde registry usando metadata."""
-    metadata = load_metadata(metadata_path)
-
+    metadata = load_metadata(metadata_path) or {}
+    
     if not metadata:
         print(f"❌ No hay metadata en {metadata_path}")
         return {'pulled': 0, 'skipped': 0, 'failed': 0}
@@ -785,6 +804,13 @@ def pull_images(metadata_path: pathlib.Path, timeout: int = DEFAULT_TIMEOUT) -> 
     print(f"\n📦 Descargando {len(items)} imágenes desde registry...\n")
     for idx, (image, info) in enumerate(items, 1):
         progress = f"[{idx}/{len(items)}]"
+        
+        # Validar que info sea un dict y tenga registry_tag
+        if not isinstance(info, dict):
+            print(f"{progress} ⏭️  {image} (metadata corrupta)")
+            stats['skipped'] += 1
+            continue
+            
         registry_tag = info.get('registry_tag')
         if not registry_tag:
             print(f"{progress} ⏭️  {image} (sin registry_tag)")
@@ -824,7 +850,7 @@ def save_images(images: List[Dict], output_dir: pathlib.Path,
             print(f"{progress} ❌ {image} (no existe)")
             stats['not_found'] += 1
             continue
-        if not check_disk_space(output_dir, 1000):
+        if not check_disk_space(output_dir, DISK_CHECK_MB):
             print(f"{progress} ❌ {image} (sin espacio)")
             stats['failed'] += 1
             break
@@ -917,6 +943,22 @@ def load_images(input_dir: pathlib.Path) -> Dict:
     return stats
 
 
+def get_metadata_path(metadata_file: Optional[str], output_dir: Optional[str]) -> pathlib.Path:
+    """Determina la ruta del archivo de metadata.
+    
+    Prioridad:
+    1. --metadata-file si se especifica
+    2. output-dir/image_metadata.json si se especifica output-dir
+    3. ./image_metadata.json en el directorio actual
+    """
+    if metadata_file:
+        return pathlib.Path(metadata_file)
+    elif output_dir:
+        return pathlib.Path(output_dir) / 'image_metadata.json'
+    else:
+        return pathlib.Path.cwd() / 'image_metadata.json'
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Guardar/cargar imágenes de Docker Compose (disco o registry)")
@@ -995,12 +1037,7 @@ def main():
             sys.exit(1)
 
     # Metadata path
-    if args.metadata_file:
-        metadata_path = pathlib.Path(args.metadata_file)
-    elif args.output_dir:
-        metadata_path = pathlib.Path(args.output_dir) / 'image_metadata.json'
-    else:
-        metadata_path = pathlib.Path.cwd() / 'image_metadata.json'
+    metadata_path = get_metadata_path(args.metadata_file, args.output_dir)
 
     # Ejecutar acción
     if args.action == 'save':
