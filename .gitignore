@@ -137,3 +137,7 @@ registry_config.json
 !registry_config.json.example
 docker-compose.*.yml
 !docker-compose.yml
+
+# Worktrees
+.worktrees/
+worktrees/
