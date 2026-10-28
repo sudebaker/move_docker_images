@@ -21,7 +21,7 @@ python move_images.py pull --registry-config registry_config.json
 ```
 
 ### Tests
-A comprehensive test suite exists with 15 tests covering core functionality:
+A comprehensive test suite exists with 27 tests covering core functionality:
 ```bash
 # Run all tests
 python -m pytest test_move_images.py -v
@@ -37,13 +37,17 @@ python move_images.py --help
 ```
 
 **Test Coverage:**
+- `TestFindComposeCommand`: Compose v2/v1 command detection (2 tests)
 - `TestImageHasRegistry`: Registry detection in image names (3 tests)
-- `TestGenerateSafeFilename`: Safe filename generation (4 tests)
+- `TestGenerateSafeFilename`: Safe filename generation (5 tests)
 - `TestGetMetadataPath`: Metadata path resolution (3 tests)
 - `TestMetadata`: Metadata save/load and validation (3 tests)
 - `TestDiskSpace`: Disk space verification (2 tests)
+- `TestPushImageOrder`: Regression for tag→push order (2 tests)
+- `TestGenerateRegistryTag`: Registry tag generation (5 tests)
+- `TestParseDockerCompose`: docker-compose.yml parsing and errors (2 tests)
 
-**Current Status:** ✅ All 15 tests passing
+**Current Status:** ✅ All 27 tests passing
 
 ### Linting
 No external linter configured. Follow PEP 8 conventions based on code patterns.

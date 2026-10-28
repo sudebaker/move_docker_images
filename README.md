@@ -194,7 +194,6 @@ Automatically verifies 1GB of free disk space before saving. Skip unchanged imag
 | `--only-built` | Only process services with `build:` section | false |
 | `--metadata-file FILE` | JSON file for image metadata tracking | `output-dir/image_metadata.json` |
 | `--timeout SECONDS` | Timeout for long operations | 600 |
-| `--exclude-registry REGISTRY` | Exclude images from registry (repeatable) | None |
 
 ### Registry Arguments
 
@@ -347,7 +346,7 @@ python move_images.py push \
 
 ## 🧪 Testing
 
-The project includes a comprehensive test suite with 15 tests covering core functionality:
+The project includes a comprehensive test suite with 27 tests covering core functionality:
 
 ```bash
 # Run all tests
@@ -366,12 +365,16 @@ python move_images.py --help
 ### Test Coverage
 
 - **TestImageHasRegistry** (3 tests): Registry detection in image names
-- **TestGenerateSafeFilename** (4 tests): Safe filename generation
+- **TestGenerateSafeFilename** (5 tests): Safe filename generation
 - **TestGetMetadataPath** (3 tests): Metadata file path resolution
 - **TestMetadata** (3 tests): Metadata save/load and validation
 - **TestDiskSpace** (2 tests): Disk space verification
+- **TestPushImageOrder** (2 tests): Regression for tag→push order (mocked Docker)
+- **TestGenerateRegistryTag** (5 tests): Registry tag generation
+- **TestParseDockerCompose** (2 tests): docker-compose.yml parsing and errors
+- **TestFindComposeCommand** (2 tests): Compose v2/v1 command detection
 
-**Current Status**: ✅ All 15 tests passing
+**Current Status**: ✅ All 27 tests passing
 
 ## 🐛 Troubleshooting
 
@@ -433,7 +436,7 @@ docker login registry.example.com
 ```
 .
 ├── move_images.py                 # Main application (1200+ lines, production-ready)
-├── test_move_images.py            # Unit tests (15 tests, 100% passing)
+├── test_move_images.py            # Unit tests (27 tests, 100% passing)
 ├── registry_config.json.example   # Configuration template with all options
 ├── AGENTS.md                       # Development documentation
 ├── README.md                       # This file

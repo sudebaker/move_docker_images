@@ -2,17 +2,34 @@
 """Tests básicos para move_images.py"""
 
 import pytest
+import subprocess
 import tempfile
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import move_images as mi
 from move_images import (
     image_has_registry,
     generate_safe_filename,
     get_metadata_path,
     load_metadata,
     save_metadata,
-    check_disk_space
+    check_disk_space,
+    push_image_to_registry,
+    parse_docker_compose,
+    generate_registry_tag,
+    find_compose_command
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_compose_cache():
+    """Aísla el caché global del comando compose entre tests."""
+    old = mi._COMPOSE_CMD
+    mi._COMPOSE_CMD = None
+    yield
+    mi._COMPOSE_CMD = old
 
 
 class TestImageHasRegistry:
@@ -62,6 +79,11 @@ class TestGenerateSafeFilename:
         """Imagen normal sin servicio."""
         filename = generate_safe_filename('ubuntu:20.04', None)
         assert filename == 'ubuntu_20.04.tar'
+
+    def test_registry_port_without_tag(self):
+        """Imagen con puerto y sin tag: el nombre no debe contener '/'."""
+        filename = generate_safe_filename('localhost:5000/app', 'my-svc')
+        assert filename == 'my-svc_latest.tar'
 
 
 class TestGetMetadataPath:
@@ -135,6 +157,153 @@ class TestDiskSpace:
             # Pedir 10TB debería fallar
             result = check_disk_space(Path(tmpdir), required_mb=10_000_000)
             assert result is False
+
+
+class TestPushImageOrder:
+    """Regresión: docker tag debe ejecutarse ANTES que docker push.
+
+    El registry_tag generado no existe localmente hasta ejecutar docker tag;
+    hacer push antes del tag falla siempre.
+    """
+
+    def _fake_run(self, calls):
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[1])
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = ''
+            mock.stderr = ''
+            return mock
+        return fake_run
+
+    def test_tag_before_push(self):
+        """El push solo se ejecuta después de tagear la imagen."""
+        calls = []
+        with patch('subprocess.run', side_effect=self._fake_run(calls)):
+            result = push_image_to_registry(
+                'myimage:latest',
+                'registry.example.com/prefix/myimage:latest')
+
+        assert result is True
+        assert 'tag' in calls and 'push' in calls
+        assert calls.index('tag') < calls.index('push')
+
+    def test_tag_failure_aborts(self):
+        """Si falla el tag, no se intenta el push."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[1])
+            if cmd[1] == 'tag':
+                raise subprocess.CalledProcessError(1, cmd)
+            mock = MagicMock()
+            mock.returncode = 0
+            return mock
+
+        with patch('subprocess.run', side_effect=fake_run):
+            result = push_image_to_registry('myimage:latest', 'reg/x:latest')
+
+        assert result is False
+        assert 'push' not in calls
+
+
+class TestGenerateRegistryTag:
+    """Tests para generación de tags de registry."""
+
+    def test_basic_with_service(self):
+        """Tag con servicio y prefijo."""
+        tag = generate_registry_tag('myimage:latest', 'reg.example.com', 'ns',
+                                    service_name='my-svc')
+        assert tag == 'reg.example.com/ns/my-svc:latest'
+
+    def test_extract_tag_from_version(self):
+        """Extrae el tag de versión real."""
+        tag = generate_registry_tag('ubuntu:20.04', 'reg.example.com', 'ns',
+                                    service_name='my-svc')
+        assert tag == 'reg.example.com/ns/my-svc:20.04'
+
+    def test_registry_port_without_tag(self):
+        """El puerto del registry no debe interpretarse como tag."""
+        tag = generate_registry_tag('localhost:5000/app', 'reg.example.com',
+                                    'ns', service_name='app-svc')
+        assert tag == 'reg.example.com/ns/app-svc:latest'
+        assert '/' not in tag.rsplit(':', 1)[-1]
+
+    def test_sha256_uses_latest(self):
+        """Imagen por hash sha256: usa tag latest."""
+        tag = generate_registry_tag('sha256:abc123', 'reg.example.com', 'ns',
+                                    service_name='my-svc')
+        assert tag == 'reg.example.com/ns/my-svc:latest'
+
+    def test_compose_image_preferred(self):
+        """compose_image se usa como nombre en el registry (estilo Gitea)."""
+        tag = generate_registry_tag('sha256:abc123', 'reg.example.com', 'ns',
+                                    service_name='svc',
+                                    compose_image='myorg/celery-exporter')
+        assert tag == 'reg.example.com/ns/myorg/celery-exporter:latest'
+
+
+class TestParseDockerCompose:
+    """Tests para parseo de docker-compose.yml."""
+
+    def test_empty_yaml_raises(self, tmp_path):
+        """YAML vacío no debe causar AttributeError."""
+        compose = tmp_path / 'docker-compose.yml'
+        compose.write_text('')
+        with pytest.raises(RuntimeError) as excinfo:
+            parse_docker_compose(compose)
+        assert 'vacío' in str(excinfo.value)
+
+    def test_parse_services(self, tmp_path):
+        """Extrae imágenes y servicios del compose (salida JSON simulada)."""
+        compose = tmp_path / 'docker-compose.yml'
+        compose.write_text(
+            'services:\n'
+            '  web:\n'
+            '    image: myorg/web:1.0\n'
+        )
+
+        def fake_run(cmd, **kwargs):
+            mock = MagicMock()
+            mock.returncode = 0
+            if 'images' in cmd:
+                mock.stdout = json.dumps([
+                    {'Repository': 'myorg', 'Tag': '1.0', 'Service': 'web'}])
+            return mock
+
+        with patch('subprocess.run', side_effect=fake_run):
+            images, data = parse_docker_compose(compose)
+
+        assert images[0]['name'] == 'myorg:1.0'
+        assert images[0]['service'] == 'web'
+        assert images[0]['compose_image'] == 'myorg/web:1.0'
+        assert images[0]['built'] is False
+
+
+class TestFindComposeCommand:
+    """Detección del comando compose (plugin v2 preferido sobre binario v1)."""
+
+    def test_prefers_v2_plugin(self):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ['docker-compose']:
+                raise subprocess.CalledProcessError(1, cmd)
+            mock = MagicMock()
+            mock.returncode = 0
+            return mock
+
+        with patch('subprocess.run', side_effect=fake_run):
+            assert find_compose_command() == ['docker', 'compose']
+
+    def test_falls_back_to_v1(self):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ['docker', 'compose']:
+                raise subprocess.CalledProcessError(1, cmd)
+            mock = MagicMock()
+            mock.returncode = 0
+            return mock
+
+        with patch('subprocess.run', side_effect=fake_run):
+            assert find_compose_command() == ['docker-compose']
 
 
 if __name__ == '__main__':

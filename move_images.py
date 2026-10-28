@@ -62,17 +62,43 @@ class Spinner:
 
 
 
+_COMPOSE_CMD: Optional[List[str]] = None
+
+
+def find_compose_command() -> Optional[List[str]]:
+    """Detecta el comando compose disponible.
+
+    Prefiere el plugin 'docker compose' (v2) y cae al binario
+    'docker-compose' (v1) si el plugin no está instalado.
+    """
+    global _COMPOSE_CMD
+    if _COMPOSE_CMD is not None:
+        return _COMPOSE_CMD
+    for cmd in (['docker', 'compose'], ['docker-compose']):
+        try:
+            subprocess.run(cmd + ['version'], check=True, capture_output=True)
+            _COMPOSE_CMD = cmd
+            return _COMPOSE_CMD
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    return None
+
+
 def check_docker_available():
     """Verify that Docker and Docker Compose are available."""
 
     try:
         subprocess.run(['docker', 'info'], check=True, capture_output=True)
-        subprocess.run(['docker-compose', '--version'],
-                       check=True, capture_output=True)
-        return True
-    except subprocess.CalledProcessError:
-        logging.error("Docker o Docker Compose no están disponibles.")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logging.error("Docker no está disponible.")
         return False
+
+    if find_compose_command() is None:
+        logging.error(
+            "Docker Compose no está disponible "
+            "(plugin 'docker compose' o binario 'docker-compose').")
+        return False
+    return True
 
 
 def parse_docker_compose(docker_compose_path: pathlib.Path) -> Tuple[List[Dict], Dict]:
@@ -87,23 +113,33 @@ def parse_docker_compose(docker_compose_path: pathlib.Path) -> Tuple[List[Dict],
         raise RuntimeError(
             f"Error al leer el archivo docker-compose.yml: {e}")
 
-    services_cfg = compose_data.get('services', {})
+    if not isinstance(compose_data, dict):
+        raise RuntimeError(
+            "docker-compose.yml vacío o inválido (se esperaba un mapping YAML)")
+
+    services_cfg = compose_data.get('services') or {}
     services_with_build = {
-        name: bool(cfg.get('build'))
+        name: bool((cfg or {}).get('build'))
         for name, cfg in services_cfg.items()
     }
 
     # Map container_name to service_name for lookup
     container_to_service = {}
     for service_name, cfg in services_cfg.items():
-        cont_name = cfg.get('container_name', service_name)
+        cont_name = (cfg or {}).get('container_name', service_name)
         container_to_service[cont_name] = service_name
 
 
+    compose_cmd = find_compose_command()
+    if compose_cmd is None:
+        raise RuntimeError(
+            "Docker Compose no está disponible "
+            "(plugin 'docker compose' o binario 'docker-compose')")
+
     try:
         result = subprocess.run(
-            ['docker-compose', '-f',
-                str(docker_compose_path), 'images', '--format', 'json'],
+            compose_cmd + ['-f', str(docker_compose_path),
+                           'images', '--format', 'json'],
             capture_output=True, text=True, check=True
         )
         images_data = yaml.safe_load(result.stdout) or []
@@ -149,7 +185,7 @@ def generate_registry_compose(compose_data: Dict, images_info: List[Dict],
                               output_path: pathlib.Path) -> None:
     """Generate a new docker-compose.yml with images from the registry."""
     new_compose = copy.deepcopy(compose_data)
-    services = new_compose.get('services', {})
+    services = new_compose.get('services') or {}
 
     # Map service_name to registry_tag for efficient lookup
     service_to_registry_tag = {}
@@ -215,73 +251,6 @@ def image_has_registry(image_name: str) -> bool:
     return False
 
 
-def get_all_local_images(exclude_registries: Optional[List[str]] = None,
-                         auto_exclude_registries: bool = True) -> List[Dict]:
-    """Get all local Docker images on the system.
-
-    Args:
-        exclude_registries: List of registries to exclude (e.g., ['git.ucosistemas.gc'])
-        auto_exclude_registries: If True, automatically detect and exclude duplicate images
-                                 that have a version without registry
-    """
-
-    try:
-        result = subprocess.run(
-            ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
-            capture_output=True, text=True, check=True)
-
-        all_lines = [line for line in result.stdout.strip().split('\n')
-                     if line and '<none>' not in line]
-
-        # Auto-detect duplicates if enabled
-        base_images_set = set()
-        if auto_exclude_registries:
-            # First, identify base images (without registry)
-            for line in all_lines:
-                if not image_has_registry(line):
-                    base_images_set.add(line)
-
-        images_info = []
-        exclude_registries = exclude_registries or []
-
-        for line in all_lines:
-            if not line or line.startswith('<none>'):
-                continue
-
-            # Exclude images from specific manually specified registries
-            should_exclude = False
-            for registry in exclude_registries:
-                if line.startswith(f"{registry}/"):
-                    should_exclude = True
-                    break
-
-            # Auto-exclude if image has registry and base version exists
-            if auto_exclude_registries and not should_exclude:
-                if image_has_registry(line):
-                    # Extract the part without the registry
-                    first_slash = line.find('/')
-                    if first_slash != -1:
-                        rest = line[first_slash + 1:]
-                        if '/' in rest:
-                            # Format: registry/org/image:tag -> look for org/image:tag
-                            potential_base = '/'.join(rest.split('/')[1:])
-                            if potential_base in base_images_set:
-                                should_exclude = True
-
-            if not should_exclude:
-                images_info.append({
-                    'name': line,
-                    'service': None,
-                    'built': False,
-                    'compose_image': line
-                })
-
-        return images_info
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error al listar imágenes: {e}")
-        return []
-
-
 def image_exists(image: str) -> bool:
     """Check if an image exists locally."""
 
@@ -322,8 +291,10 @@ def generate_safe_filename(image: str, service_name: Optional[str] = None) -> st
     """
     if service_name:
         base = service_name.replace('/', '_').replace(':', '_')
-        if ':' in image and not image.startswith('sha256:'):
-            tag = image.split(':')[-1]
+        last_slash = image.rfind('/')
+        last_colon = image.rfind(':')
+        if not image.startswith('sha256:') and last_colon > last_slash:
+            tag = image[last_colon + 1:]
             return f"{base}_{tag}.tar"
         return f"{base}_latest.tar"
 
@@ -546,7 +517,11 @@ def generate_registry_tag(image: str, registry_url: str, prefix: str = "",
     Example: gitea.example.com/myuser/myproject/image:tag
     """
     # Extract tag from current image
-    if ':' in image and not image.startswith('sha256:'):
+    # El tag va tras el último ':' que aparece después del último '/':
+    # 'localhost:5000/app' no tiene tag, 'reg:5000/app:v1' tiene tag 'v1'
+    last_slash = image.rfind('/')
+    last_colon = image.rfind(':')
+    if not image.startswith('sha256:') and last_colon > last_slash:
         _, tag = image.rsplit(':', 1)
     else:
         tag = 'latest'
@@ -567,11 +542,12 @@ def generate_registry_tag(image: str, registry_url: str, prefix: str = "",
         registry_name = service_name.replace('-', '_')
     else:
         # Fallback: sanitize current image name
-        if ':' in image and not image.startswith('sha256:'):
-            name = image.split(':')[0]
+        if not image.startswith('sha256:') and last_colon > last_slash:
+            # Elimina solo el tag, conserva registry:puerto/ruta
+            name = image[:last_colon]
         else:
             name = image.replace('sha256:', '')[:12]
-        registry_name = name.replace('/', '_').replace('.', '_')
+        registry_name = name.replace('/', '_').replace('.', '_').replace(':', '_')
 
     # Gitea specific: clean names to avoid issues
     registry_name = registry_name.lower().replace('_', '-')
@@ -615,39 +591,21 @@ def verify_image_in_registry(registry_tag: str) -> bool:
 
 def push_image_to_registry(image: str, registry_tag: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
     """Tag and push image to registry."""
+    # Tag image BEFORE pushing: registry_tag no existe localmente hasta tagear
     try:
-        # Tag image
         subprocess.run(['docker', 'tag', image, registry_tag],
                        check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        return False
 
-        # Push image with spinner
-        spinner = Spinner(f"Pushing {image}")
-        spinner.start()
-        try:
-            subprocess.run(
-                ['docker', 'push', registry_tag],
-                capture_output=True, text=True,
-                check=True, timeout=timeout
-            )
-            spinner.stop()
-        except Exception:
-            spinner.stop()
-            raise
-
-        # Verify image is actually in registry
-        verified = verify_image_in_registry(registry_tag)
-        if not verified:
-            logging.warning(
-                f"Could not verify {registry_tag} in registry")
-
-        # Clean up registry tag after push
-        try:
-            subprocess.run(['docker', 'rmi', registry_tag],
-                           capture_output=True, check=False)
-        except Exception:
-            pass
-
-        return True
+    spinner = Spinner(f"Pushing {image}")
+    spinner.start()
+    try:
+        subprocess.run(
+            ['docker', 'push', registry_tag],
+            capture_output=True, text=True,
+            check=True, timeout=timeout
+        )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.lower() if e.stderr else ""
         if 'unauthorized' in stderr or '401' in stderr:
@@ -669,38 +627,31 @@ def push_image_to_registry(image: str, registry_tag: str, timeout: int = DEFAULT
     except subprocess.TimeoutExpired:
         logging.error(f"Timeout pushing {registry_tag}")
         return False
+    except Exception:
+        raise
+    finally:
+        spinner.stop()
+
+    # Verify image is actually in registry
+    verified = verify_image_in_registry(registry_tag)
+    if not verified:
+        logging.warning(
+            f"Could not verify {registry_tag} in registry")
+
+    return True
 
 
 def pull_image_from_registry(registry_tag: str, original_name: str,
                              timeout: int = DEFAULT_TIMEOUT) -> bool:
     """Pull image from registry and re-tag to original name."""
+    spinner = Spinner(f"Pulling {registry_tag}")
+    spinner.start()
     try:
-        # Pull image with spinner
-        spinner = Spinner(f"Pulling {registry_tag}")
-        spinner.start()
-        try:
-            subprocess.run(
-                ['docker', 'pull', registry_tag],
-                capture_output=True, text=True,
-                check=True, timeout=timeout
-            )
-            spinner.stop()
-        except Exception:
-            spinner.stop()
-            raise
-
-        # Re-tag to original name
-        subprocess.run(['docker', 'tag', registry_tag, original_name],
-                       check=True, capture_output=True)
-
-        # Optional cleanup of registry tag
-        try:
-            subprocess.run(['docker', 'rmi', registry_tag],
-                           capture_output=True)
-        except Exception:
-            pass
-
-        return True
+        subprocess.run(
+            ['docker', 'pull', registry_tag],
+            capture_output=True, text=True,
+            check=True, timeout=timeout
+        )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.lower() if e.stderr else ""
         if 'manifest unknown' in stderr or 'not found' in stderr:
@@ -716,6 +667,26 @@ def pull_image_from_registry(registry_tag: str, original_name: str,
     except subprocess.TimeoutExpired:
         logging.error(f"Timeout pulling {registry_tag}")
         return False
+    except Exception:
+        raise
+    finally:
+        spinner.stop()
+
+    # Re-tag to original name
+    try:
+        subprocess.run(['docker', 'tag', registry_tag, original_name],
+                       check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        return False
+
+    # Optional cleanup of registry tag
+    try:
+        subprocess.run(['docker', 'rmi', registry_tag],
+                       capture_output=True)
+    except Exception:
+        pass
+
+    return True
 
 
 # ============================================================================
@@ -764,7 +735,13 @@ def push_images(images: List[Dict], registry_url: str, prefix: str,
         # Push
         if push_image_to_registry(image, registry_tag, timeout):
             print(f"{progress} OK {image}")
+            # Capturar el digest ANTES de eliminar el tag temporal
             digest = get_image_digest(registry_tag)
+            try:
+                subprocess.run(['docker', 'rmi', registry_tag],
+                               capture_output=True, check=False)
+            except Exception:
+                pass
             metadata[image] = {
                 'id': image_id,
                 'registry_tag': registry_tag,
@@ -886,7 +863,6 @@ def save_images(images: List[Dict], output_dir: pathlib.Path,
         try:
             subprocess.run(
                 ['docker', 'save', '-o', str(file_path), save_image], check=True, timeout=DOCKER_SAVE_TIMEOUT)
-            spinner.stop()
             print(f"{progress} OK {save_image}")
             metadata[image] = {
                 'id': image_id,
@@ -898,14 +874,14 @@ def save_images(images: List[Dict], output_dir: pathlib.Path,
             metadata_changed = True
             stats['saved'] += 1
         except subprocess.CalledProcessError as e:
-            spinner.stop()
-            print(f"{progress} FAIL {image} (error)")
             logging.error(f"Error saving {image}: {e}")
             stats['failed'] += 1
         except subprocess.TimeoutExpired:
-            spinner.stop()
-            print(f"{progress} FAIL {image} (timeout)")
             stats['failed'] += 1
+        except Exception:
+            raise
+        finally:
+            spinner.stop()
 
     if metadata_changed:
         save_metadata(metadata_path, metadata)
@@ -929,18 +905,17 @@ def load_images(input_dir: pathlib.Path) -> Dict:
         try:
             subprocess.run(
                 ['docker', 'load', '-i', str(file_path)], check=True, timeout=DOCKER_SAVE_TIMEOUT)
-            spinner.stop()
             print(f"{progress} OK {file_path.name}")
             stats['loaded'] += 1
         except subprocess.CalledProcessError as e:
-            spinner.stop()
-            print(f"{progress} FAIL {file_path.name} (error)")
             logging.error(f"Error: {e}")
             stats['failed'] += 1
         except subprocess.TimeoutExpired:
-            spinner.stop()
-            print(f"{progress} FAIL {file_path.name} (timeout)")
             stats['failed'] += 1
+        except Exception:
+            raise
+        finally:
+            spinner.stop()
 
     return stats
 
@@ -979,8 +954,6 @@ def main():
                         help="Do not re-save/push unchanged images")
     parser.add_argument('--only-built', action='store_true',
                         help="Only locally built images (services with build)")
-    parser.add_argument('--exclude-registry', action='append', dest='exclude_registries',
-                        help="Exclude images from this registry when using save without docker-compose (can repeat)")
     parser.add_argument('--metadata-file', dest='metadata_file',
                         help="Path to JSON file with metadata. Default: output-dir/image_metadata.json")
     parser.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT,
@@ -1040,43 +1013,45 @@ def main():
             logging.error("--docker-compose is required for save/load")
             sys.exit(1)
 
+    # Input validation - validate paths exist before processing
+    if args.docker_compose:
+        docker_compose_path = pathlib.Path(args.docker_compose)
+        if not docker_compose_path.exists():
+            logging.error(f"--docker-compose file not found: {docker_compose_path}")
+            sys.exit(1)
+        if not docker_compose_path.is_file():
+            logging.error(f"--docker-compose is not a file: {docker_compose_path}")
+            sys.exit(1)
+
+    if args.output_dir:
+        output_dir_path = pathlib.Path(args.output_dir)
+        if args.action == 'load' and not output_dir_path.exists():
+            logging.error(f"--output-dir does not exist: {output_dir_path}")
+            sys.exit(1)
+
+    if args.metadata_file:
+        metadata_file_path = pathlib.Path(args.metadata_file)
+        if metadata_file_path.exists() and not metadata_file_path.is_file():
+            logging.error(f"--metadata-file is not a file: {metadata_file_path}")
+            sys.exit(1)
+
+    # Registry config validation
+    if args.registry_config:
+        registry_config_path = pathlib.Path(args.registry_config)
+        if not registry_config_path.exists():
+            logging.error(f"--registry-config file not found: {registry_config_path}")
+            sys.exit(1)
+        if not registry_config_path.is_file():
+            logging.error(f"--registry-config is not a file: {registry_config_path}")
+            sys.exit(1)
+
     # Metadata path
     metadata_path = get_metadata_path(args.metadata_file, args.output_dir)
 
     # Execute action
     if args.action == 'save':
         output_dir = pathlib.Path(args.output_dir)
-
-        if args.docker_compose:
-            # Use images from docker-compose
-            docker_compose_path = pathlib.Path(args.docker_compose)
-            images, _ = parse_docker_compose(docker_compose_path)
-        else:
-            # Use all local images
-            print(
-                "INFO No docker-compose specified, saving all local images")
-            check_docker_available()
-
-            # Detect registries to exclude from config, args or --exclude-registry
-            exclude_registries = []
-            if loaded_config.get('registry_url'):
-                exclude_registries.append(loaded_config.get('registry_url'))
-            if args.registry_url:
-                exclude_registries.append(args.registry_url)
-            if args.exclude_registries:
-                exclude_registries.extend(args.exclude_registries)
-
-            # Remove duplicates
-            exclude_registries = list(set(exclude_registries))
-
-            if exclude_registries:
-                print(
-                    f"EXCLUDE Excluding images from: {', '.join(exclude_registries)}")
-
-            images = get_all_local_images(exclude_registries)
-            if not images:
-                print("FAIL No local images found")
-                sys.exit(1)
+        images, _ = parse_docker_compose(docker_compose_path)
 
         stats = save_images(images, output_dir, args.skip_unchanged,
                             metadata_path, args.only_built)
@@ -1126,7 +1101,7 @@ def main():
             sys.exit(1)
 
         # Authentication
-        auth_success, config_data = ensure_registry_auth(
+        auth_success, _ = ensure_registry_auth(
             registry_url, args.registry_user,
             args.registry_password, registry_config_path,
             args.skip_login)
@@ -1160,7 +1135,7 @@ def main():
                                       registry_prefix, output_compose)
 
         # Logout if requested
-        auto_logout = args.auto_logout or config_data.get('auto_logout', False)
+        auto_logout = args.auto_logout or loaded_config.get('auto_logout', False)
         if auto_logout:
             docker_logout(registry_url)
 
@@ -1180,7 +1155,7 @@ def main():
             sys.exit(1)
 
         # Authentication
-        auth_success, config_data = ensure_registry_auth(
+        auth_success, _ = ensure_registry_auth(
             registry_url, args.registry_user,
             args.registry_password, registry_config_path,
             args.skip_login)
@@ -1199,10 +1174,17 @@ def main():
         print("=" * 50)
 
         # Logout if requested
-        auto_logout = args.auto_logout or config_data.get('auto_logout', False)
+        auto_logout = args.auto_logout or loaded_config.get('auto_logout', False)
         if auto_logout:
             docker_logout(registry_url)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as e:
+        logging.error(str(e))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nCancelado por el usuario")
+        sys.exit(130)
